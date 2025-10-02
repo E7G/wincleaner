@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use freya::prelude::*;
 use std::process::Command;
 use std::path::Path;
