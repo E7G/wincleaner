@@ -3,6 +3,9 @@ use std::process::Command;
 use std::path::Path;
 use std::collections::HashSet;
 
+// Include the window icon
+const WINDOW_ICON: &[u8] = include_bytes!("../assets/wincleaner_icon.png");
+
 // Apple设计系统色彩方案 - 语义化命名
 #[derive(PartialEq)]
 struct AppTheme {
@@ -111,7 +114,18 @@ impl ThemeMode {
 }
 
 fn main() {
-    launch(app);
+    let window_icon = LaunchConfig::load_icon(WINDOW_ICON);
+    
+    launch_cfg(
+        app,
+        LaunchConfig::<()>::new()
+            .with_size(900.0, 700.0)
+            .with_decorations(true)
+            .with_transparency(false)
+            .with_title("WinCleaner - Windows系统清理工具")
+            .with_background("rgb(28, 28, 30)")
+            .with_icon(window_icon)
+    );
 }
 
 fn app() -> Element {

@@ -26,7 +26,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/wincleaner.git
+git clone https://github.com/e7g/wincleaner.git
 cd wincleaner
 
 # 编译运行
@@ -74,17 +74,20 @@ cargo run --release
 
 ## 🎨 界面预览
 
-*主界面截图将在这里展示*
+### 主界面
+![主界面](screenshots/屏幕截图%202025-10-02%20223916.png)
 
-*深色主题预览*
+### 浅色主题
+![浅色主题](screenshots/屏幕截图%202025-10-02%20223951.png)
 
-*批量模式界面*
+### 批量模式
+![批量模式](screenshots/屏幕截图%202025-10-02%20224147.png)
 
 ## 🏗️ 技术架构
 
 ### 核心技术栈
 - **[Rust](https://www.rust-lang.org/)**：高性能系统编程语言
-- **[Freya](https://freyaui.dev/)**：基于Dioxus的跨平台GUI框架
+- **[Freya](https://freyaui.dev/)**：基于skia的跨平台GUI框架
 - **[Tokio](https://tokio.rs/)**：异步运行时，提供卓越的性能
 
 ### 设计理念
@@ -101,7 +104,7 @@ cargo run --release
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # 克隆项目
-git clone https://github.com/yourusername/wincleaner.git
+git clone https://github.com/e7g/wincleaner.git
 cd wincleaner
 ```
 
@@ -156,7 +159,6 @@ cargo build --release
 
 感谢以下开源项目的贡献：
 - [Freya](https://github.com/marc2332/freya) - 提供优秀的GUI框架
-- [Dioxus](https://github.com/DioxusLabs/dioxus) - 响应式UI库
 - [Tokio](https://github.com/tokio-rs/tokio) - 异步运行时
 
 ---
