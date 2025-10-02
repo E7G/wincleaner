@@ -1,0 +1,112 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build Windows Release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Generate release tag
+      id: generate_release_tag
+      uses: amitsingh-007/next-release-tag@v6.0.0
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        tag_prefix: "v"
+        tag_template: "yyyy.mm.dd.i"
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+    
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    
+    - name: Build release
+      run: cargo build --release
+    
+    - name: Create release archive
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path dist -Force
+        Copy-Item "target/release/wincleaner.exe" -Destination "dist/"
+        if (Test-Path "assets") {
+          Copy-Item "assets" -Destination "dist/" -Recurse
+        }
+        Copy-Item "README.md" -Destination "dist/"
+        Copy-Item "LICENSE" -Destination "dist/"
+        
+        # 获取版本信息
+        $version = cargo pkgid | Split-Path -Leaf
+        echo "VERSION=$version" >> $env:GITHUB_ENV
+        
+        # 创建压缩包
+        Compress-Archive -Path "dist/*" -DestinationPath "wincleaner-windows-x64.zip"
+    
+    # - name: Upload build artifacts
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: wincleaner-windows-x64
+    #     path: wincleaner-windows-x64.zip
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.generate_release_tag.outputs.next_release_tag }}
+        name: Release ${{ steps.generate_release_tag.outputs.next_release_tag }}
+        files: wincleaner-windows-x64.zip
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 快速构建检查（用于PR验证）
+  build-check:
+    name: Build Check
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check build
+      run: cargo check
+    
+    - name: Test build
+      run: cargo build --release
