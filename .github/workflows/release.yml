@@ -53,9 +53,6 @@ jobs:
       run: |
         New-Item -ItemType Directory -Path dist -Force
         Copy-Item "target/release/wincleaner.exe" -Destination "dist/"
-        if (Test-Path "assets") {
-          Copy-Item "assets" -Destination "dist/" -Recurse
-        }
         Copy-Item "README.md" -Destination "dist/"
         Copy-Item "LICENSE" -Destination "dist/"
         
