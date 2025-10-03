@@ -1,0 +1,24 @@
+# WinCleaner 自定义清理规则配置
+# 警告：请谨慎配置，错误的命令可能导致系统问题
+
+[[task]]
+name = "示例: 清理临时文件"
+description = "清理用户临时文件夹"
+category = "Custom"
+command = "del /q %TEMP%\\*.tmp"
+path_check = "%TEMP%"
+requires_confirmation = true
+dangerous = false
+estimated_size = "~100MB"
+icon = "📝"
+
+[[task]]
+name = "清理 VSCode 工作区缓存"
+description = "清理 VSCode 工作区缓存文件"
+category = "Custom"
+command = "rmdir /s /q %APPDATA%\\Code\\User\\workspaceStorage"
+path_check = "%APPDATA%\\Code\\User\\workspaceStorage"
+requires_confirmation = true
+dangerous = false
+estimated_size = "auto"
+icon = "💻"

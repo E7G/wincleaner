@@ -2,9 +2,16 @@
 
 一个现代化的Windows系统清理工具，基于Rust和Freya GUI库开发。提供直观的图形界面，帮助用户安全地清理系统垃圾文件。
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)
-![Windows](https://img.shields.io/badge/platform-windows-lightgrey)
+<p align="center">
+  <img src="assets/wincleaner_icon.png" alt="WinCleaner" width="128" height="128">
+</p>
+
+<p align="center">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white">
+  <img alt="Windows" src="https://img.shields.io/badge/platform-windows-lightgrey">
+  <img alt="Version" src="https://img.shields.io/badge/version-2025.10.03-brightgreen">
+</p>
 
 ## ✨ 功能特点
 
@@ -16,6 +23,8 @@
 - **🛡️ 智能检测**：自动检查目标路径是否存在，避免误操作
 - **🔧 异步执行**：后台执行清理任务，UI不卡顿，无弹窗
 - **📈 统计报告**：详细的清理结果统计和错误信息
+- **📝 自定义规则**：支持用户通过配置文件添加自定义清理规则
+- **🔤 环境变量**：完整支持Windows环境变量（%APPDATA%、%TEMP%等）
 
 ## 🚀 快速开始
 
@@ -26,6 +35,10 @@
 
 ### 安装运行
 
+#### 方式一：下载预编译版本
+前往 [Releases](https://github.com/e7g/wincleaner/releases) 页面下载最新版本的可执行文件。
+
+#### 方式二：从源码编译
 ```bash
 # 克隆仓库
 git clone https://github.com/e7g/wincleaner.git
@@ -33,6 +46,13 @@ cd wincleaner
 
 # 编译运行
 cargo run --release
+```
+
+#### 方式三：快速体验
+```bash
+# 直接运行（需要Rust环境）
+cargo install --git https://github.com/e7g/wincleaner.git
+wincleaner
 ```
 
 ## 🚀 最新改进
@@ -44,6 +64,8 @@ cargo run --release
 - ✅ **统计报告**：清理结果包含成功率、失败任务数和错误详情
 - ✅ **系统保护**：自动阻止清理系统关键目录
 - ✅ **异步执行**：所有清理操作在后台线程中执行
+- ✅ **自定义清理规则**：通过TOML配置文件支持用户自定义清理任务
+- ✅ **环境变量支持**：完整支持Windows环境变量（%APPDATA%、%TEMP%等）
 
 ### 错误处理特性
 - **权限不足**：智能检测并提供管理员运行建议
@@ -54,11 +76,12 @@ cargo run --release
 
 ### 使用说明
 
-1. **选择清理类别**：点击左侧分类（开发工具、应用缓存、系统清理）
+1. **选择清理类别**：点击左侧分类（开发工具、应用缓存、系统清理、自定义规则）
 2. **选择清理项目**：在右侧列表中选择要清理的项目
 3. **执行清理**：点击"清理"按钮，重要操作会弹出确认对话框
 4. **批量清理**：开启"批量模式"可同时选择多个项目
 5. **查看结果**：清理完成后显示详细的统计报告和错误信息
+6. **自定义规则**：编辑`wincleaner-config.toml`文件添加自定义清理任务
 
 ## 🧹 支持的清理项目
 
@@ -85,6 +108,50 @@ cargo run --release
 | 磁盘清理 | 运行Windows磁盘清理工具 | 可变 | 标准用户 |
 | 清空回收站 | 永久删除回收站内容 | 可变 | 标准用户 |
 
+### 自定义清理规则
+支持通过配置文件添加自定义清理任务，配置文件位于：`wincleaner-config.toml`
+
+#### 配置示例
+```toml
+# WinCleaner 自定义清理规则配置
+# 警告：请谨慎配置，错误的命令可能导致系统问题
+
+[[task]]
+name = "清理 VSCode 工作区缓存"
+description = "清理 VSCode 工作区缓存文件"
+category = "Custom"
+command = "rmdir /s /q %APPDATA%\Code\User\workspaceStorage"
+path_check = "%APPDATA%\Code\User\workspaceStorage"
+requires_confirmation = true
+dangerous = false
+estimated_size = "auto"
+icon = "💻"
+```
+
+#### 配置字段说明
+| 字段 | 类型 | 描述 | 示例 |
+|------|------|------|------|
+| name | string | 任务名称 | "清理临时文件" |
+| description | string | 任务描述 | "清理用户临时文件夹" |
+| category | string | 分类名称 | "Custom" |
+| command | string | 清理命令（支持环境变量） | "del /q %TEMP%\\*.tmp" |
+| path_check | string | 可选，检查路径是否存在 | "%TEMP%" |
+| requires_confirmation | bool | 是否需要确认 | true |
+| dangerous | bool | 是否标记为危险操作 | false |
+| estimated_size | string | 预估大小或"auto" | "~100MB" |
+| icon | string | 表情符号图标 | "📝" |
+
+#### 支持的环境变量
+- `%USERPROFILE%` - 用户主目录
+- `%APPDATA%` - 应用数据目录
+- `%LOCALAPPDATA%` - 本地应用数据目录
+- `%TEMP%` / `%TMP%` - 临时文件目录
+- `%PROGRAMFILES%` - 程序文件目录
+- `%PROGRAMFILES(X86)%` - 32位程序文件目录
+- `%SYSTEMDRIVE%` - 系统驱动器
+- `%WINDIR%` - Windows目录
+- `%PUBLIC%` - 公共用户目录
+
 ## 🛡️ 安全机制
 
 - **🔍 路径验证**：清理前自动检查目标路径是否存在
@@ -97,20 +164,33 @@ cargo run --release
 ## 🎨 界面预览
 
 ### 主界面
-![主界面](screenshots/屏幕截图%202025-10-02%20223916.png)
+*现代化深色主题界面，清晰展示各类清理选项*
+![主界面](screenshots/屏幕截图%202025-10-03%20184626.png)
 
 ### 浅色主题
-![浅色主题](screenshots/屏幕截图%202025-10-02%20223951.png)
+*简洁的浅色模式，适合不同使用场景*
+![浅色主题](screenshots/屏幕截图%202025-10-03%20184636.png)
 
 ### 批量模式
-![批量模式](screenshots/屏幕截图%202025-10-02%20224147.png)
+*高效的批量清理功能，支持多项目同时处理*
+![批量模式](screenshots/屏幕截图%202025-10-03%20184803.png)
+
 
 ## 🏗️ 技术架构
 
 ### 核心技术栈
-- **[Rust](https://www.rust-lang.org/)**：高性能系统编程语言
-- **[Freya](https://freyaui.dev/)**：基于skia的跨平台GUI框架
-- **[Tokio](https://tokio.rs/)**：异步运行时，提供卓越的性能
+- **[Rust](https://www.rust-lang.org/)**：高性能系统编程语言，内存安全零成本抽象
+- **[Freya](https://freyaui.dev/)**：基于Skia的跨平台GUI框架，响应式设计
+- **[Tokio](https://tokio.rs/)**：异步运行时，提供卓越的性能和并发能力
+
+### 架构亮点
+- **零依赖部署**：单可执行文件，无需额外运行时
+- **内存安全**：Rust的所有权系统保证内存安全
+- **跨平台支持**：基于Skia的渲染引擎，一致的视觉体验
+- **异步架构**：Tokio提供高性能异步I/O，UI永不卡顿
+- **命令执行**：std::process::Command + CREATE_NO_WINDOW 隐藏黑框
+- **环境变量**：完整Windows环境变量扩展支持
+- **配置存储**：TOML格式配置文件（支持自定义清理规则）
 
 ### 设计理念
 - **响应式布局**：适配不同屏幕尺寸

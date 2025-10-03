@@ -1,4 +1,4 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use freya::prelude::*;
 use std::collections::HashSet;
@@ -8,6 +8,88 @@ use std::process::Command;
 
 // Include the window icon
 const WINDOW_ICON: &[u8] = include_bytes!("../assets/wincleaner_icon.png");
+
+// 环形日志缓冲区 - 恒定大小，保留最近100条日志
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+static LOG_RING: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| {
+    Mutex::new(VecDeque::with_capacity(100))
+});
+
+fn log(message: &str) {
+    const LOG_FILE: &str = "wincleaner.log";
+    const MAX_LOGS: usize = 100;
+    
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let entry = format!("[{}] {}\n", timestamp, message);
+    
+    let mut ring = LOG_RING.lock().unwrap();
+    
+    // 环形缓冲区：满了就移除最旧的
+    if ring.len() >= MAX_LOGS {
+        ring.pop_front();
+    }
+    ring.push_back(entry);
+    
+    // 原子化文件写入，失败时报告错误
+    let content = ring.iter().cloned().collect::<String>();
+    if let Err(e) = std::fs::write(LOG_FILE, content) {
+        eprintln!("日志写入失败: {}", e);
+    }
+}
+
+// 加载自定义清理规则
+fn load_custom_tasks() -> Vec<CleanTask> {
+    const CONFIG_FILE: &str = "wincleaner-config.toml";
+    
+    match std::fs::read_to_string(CONFIG_FILE) {
+        Ok(content) => {
+            // 定义配置结构体来匹配 TOML 格式
+            #[derive(Deserialize)]
+            struct Config {
+                task: Vec<CleanTask>,
+            }
+            
+            // 解析为配置结构体
+            match toml::from_str::<Config>(&content) {
+                Ok(config) => {
+                    log(&format!("加载了 {} 个自定义清理规则", config.task.len()));
+                    config.task
+                }
+                Err(e) => {
+                    log(&format!("配置文件格式错误: {}", e));
+                    Vec::new()
+                }
+            }
+        },
+        Err(_) => {
+            // 配置文件不存在，创建示例配置
+            let example_tasks = vec![CleanTask {
+                name: "示例: 清理临时文件".to_string(),
+                description: "清理用户临时文件夹".to_string(),
+                category: CleanCategory::Custom,
+                command: "del /q %TEMP%\\*.tmp".to_string(),
+                path_check: Some("%TEMP%".to_string()),
+                requires_confirmation: true,
+                dangerous: false,
+                estimated_size: Some("~100MB".to_string()),
+                icon: Some("📝".to_string()),
+            }];
+            
+            // 创建符合 TOML 格式的配置内容
+            let config_str = format!(
+                "# WinCleaner 自定义清理规则配置\n# 警告：请谨慎配置，错误的命令可能导致系统问题\n\n[[task]]\n{}\n[[task]]\nname = \"清理 VSCode 工作区缓存\"\ndescription = \"清理 VSCode 工作区缓存文件\"\ncategory = \"Custom\"\ncommand = \"rmdir /s /q %APPDATA%\\\\Code\\\\User\\\\workspaceStorage\"\npath_check = \"%APPDATA%\\\\Code\\\\User\\\\workspaceStorage\"\nrequires_confirmation = true\ndangerous = false\nestimated_size = \"auto\"\nicon = \"💻\"",
+                example_tasks.iter().map(|task| toml::to_string_pretty(task).unwrap()).collect::<Vec<_>>().join("\n").replace("[", "").replace("]", "")
+            );
+            
+            let _ = std::fs::write(CONFIG_FILE, &config_str);
+            log(&format!("创建示例配置文件"));
+            Vec::new()
+        }
+    }
+}
 
 // Apple设计系统色彩方案 - 语义化命名
 #[derive(PartialEq)]
@@ -71,34 +153,42 @@ const DARK_THEME: AppTheme = AppTheme {
     grid: "rgb(58, 58, 62)",
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 enum CleanCategory {
     #[default]
     DevTools,
     AppCache,
     System,
+    Custom, // 用户自定义分类
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 struct CleanTask {
     name: String,
     description: String,
     category: CleanCategory,
     command: String,
-    path_check: Option<String>, // 路径存在性检查 - 自动判断是否需要清理
+    path_check: Option<String>,
     requires_confirmation: bool,
     dangerous: bool,
-    estimated_size: Option<String>, // 预估清理大小（可以是固定值或"auto"表示自动检测）
-    icon: Option<String>,           // 图标标识
+    estimated_size: Option<String>,
+    icon: Option<String>,
 }
 
 impl CleanTask {
+    // 获取展开后的路径检查
+    fn get_expanded_path(&self) -> Option<String> {
+        self.path_check.as_ref().map(|path| expand_environment_variables(path))
+    }
+    
     // 获取实际大小，支持自动检测
     fn get_actual_size(&self) -> Option<String> {
         if let Some(ref size_str) = self.estimated_size {
             if size_str == "auto" {
-                // 自动检测模式
-                if let Some(ref path) = self.path_check {
+                // 自动检测模式 - 使用展开后的路径
+                if let Some(ref path) = self.get_expanded_path() {
                     return get_directory_size(path).map(format_size);
                 }
             }
@@ -192,19 +282,30 @@ fn format_size(bytes: u64) -> String {
 
 // 扩展环境变量
 fn expand_environment_variables(path: &str) -> String {
-    if path.contains('%') {
-        // 简单的环境变量扩展
-        path.replace(
-            "%USERPROFILE%",
-            &std::env::var("USERPROFILE").unwrap_or_default(),
-        )
-        .replace(
-            "%LocalAppData%",
-            &std::env::var("LocalAppData").unwrap_or_default(),
-        )
-    } else {
-        path.to_string()
+    if !path.contains('%') {
+        return path.to_string();
     }
+    
+    // 获取所有常用Windows环境变量
+    let env_vars = [
+        ("%USERPROFILE%", std::env::var("USERPROFILE").unwrap_or_default()),
+        ("%APPDATA%", std::env::var("APPDATA").unwrap_or_default()),
+        ("%LOCALAPPDATA%", std::env::var("LOCALAPPDATA").unwrap_or_default()),
+        ("%TEMP%", std::env::var("TEMP").unwrap_or_default()),
+        ("%TMP%", std::env::var("TMP").unwrap_or_default()),
+        ("%PROGRAMFILES%", std::env::var("PROGRAMFILES").unwrap_or_default()),
+        ("%PROGRAMFILES(X86)%", std::env::var("PROGRAMFILES(X86)").unwrap_or_default()),
+        ("%SYSTEMDRIVE%", std::env::var("SYSTEMDRIVE").unwrap_or_default()),
+        ("%WINDIR%", std::env::var("WINDIR").unwrap_or_default()),
+        ("%PUBLIC%", std::env::var("PUBLIC").unwrap_or_default()),
+    ];
+    
+    let mut result = path.to_string();
+    for (var_name, var_value) in &env_vars {
+        result = result.replace(var_name, var_value);
+    }
+    
+    result
 }
 
 fn main() {
@@ -386,92 +487,16 @@ fn app() -> Element {
     let mut show_batch_mode = use_signal(|| false);
     let mut selected_category = use_signal(|| CleanCategory::DevTools);
     let mut app_state = use_signal(|| AppState::Idle);
-
-    // 批量清理函数 - 使用Freya的SnackBar显示状态
-    let mut run_batch_cleanup = move || {
-        let selected = selected_tasks();
-        if selected.is_empty() {
-            return;
-        }
-
-        app_state.set(AppState::Running(format!(
-            "批量清理 {} 个任务",
-            selected.len()
-        )));
-        progress.set(0.0);
-
-        let mut app_state_clone = app_state;
-        let mut progress_clone = progress;
-        let mut selected_tasks_clone = selected_tasks;
-
-        spawn(async move {
-            let total = selected.len();
-            let mut completed = 0;
-            let mut successful_tasks = 0;
-            let mut failed_tasks = 0;
-            let mut total_space_freed: u64 = 0;
-            let mut errors = Vec::new();
-
-            for task_name in selected {
-                if let Some(task) = tasks().iter().find(|t| t.name == task_name) {
-                    // 运行单个任务
-                    app_state_clone.set(AppState::Running(format!("正在清理: {}", task.name)));
-
-                    // 获取清理前的空间大小
-                    let space_before = if let Some(ref path) = task.path_check {
-                        get_directory_size(&expand_environment_variables(path))
-                    } else {
-                        None
-                    };
-
-                    let result = run_clean_task_impl(task.clone()).await;
-                    completed += 1;
-                    progress_clone.set(completed as f32 / total as f32);
-
-                    match result {
-                        Ok(_) => {
-                            successful_tasks += 1;
-
-                            // 计算释放的空间
-                            if let Some(ref path) = task.path_check {
-                                let space_after =
-                                    get_directory_size(&expand_environment_variables(path));
-                                if let (Some(before), Some(after)) = (space_before, space_after) {
-                                    if before > after {
-                                        total_space_freed += before - after;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            failed_tasks += 1;
-                            errors.push(format!("{}: {}", task.name, e));
-                        }
-                    }
-                }
-            }
-
-            // 创建统计报告
-            let stats = CleanupStats {
-                total_tasks: total,
-                successful_tasks,
-                failed_tasks,
-                total_space_freed: if total_space_freed > 0 {
-                    Some(total_space_freed)
-                } else {
-                    None
-                },
-                errors,
-            };
-
-            if failed_tasks > 0 {
-                app_state_clone.set(AppState::SuccessWithStats(stats));
-            } else {
-                app_state_clone.set(AppState::Success);
-            }
-            selected_tasks_clone.set(HashSet::new());
-        });
+    
+    // 加载自定义任务并合并到任务列表中
+    let custom_tasks = load_custom_tasks();
+    let all_tasks = {
+        let mut all = tasks();
+        all.extend(custom_tasks);
+        all
     };
+
+    // 批量清理功能已内联到按钮点击事件中
     let mut show_confirmation = use_signal(|| None::<CleanTask>);
 
     let theme_icon = if theme_mode() == ThemeMode::Dark {
@@ -484,11 +509,13 @@ fn app() -> Element {
         ("开发工具", CleanCategory::DevTools),
         ("应用缓存", CleanCategory::AppCache),
         ("系统清理", CleanCategory::System),
+        ("自定义规则", CleanCategory::Custom),
     ];
 
-    let filtered_tasks = tasks()
-        .into_iter()
+    let filtered_tasks = all_tasks
+        .iter()
         .filter(|task| task.category == selected_category())
+        .cloned()
         .collect::<Vec<_>>();
 
     rsx!(
@@ -677,15 +704,11 @@ fn app() -> Element {
                                     "批量清理进度"
                                 }
 
-                                label {
-                                    font_size: "14",
-                                    color: theme.label_secondary,
-                                    "{((progress() * 100.0) as u32)}%"
-                                }
                             }
 
                             ProgressBar {
-                                progress: progress(),
+                                progress: (progress() * 100.0) as f32,
+                                show_progress: true,
                                 width: "100%",
                             }
                         }
@@ -727,7 +750,84 @@ fn app() -> Element {
 
                             if show_batch_mode() && !selected_tasks().is_empty() {
                                 FilledButton {
-                                    onclick: move |_| run_batch_cleanup(),
+                                    onclick: move |_| {
+                                        let selected = selected_tasks();
+                                        if !selected.is_empty() {
+                                            app_state.set(AppState::Running(format!(
+                                                "批量清理 {} 个任务",
+                                                selected.len()
+                                            )));
+                                            progress.set(0.0);
+
+                                            let mut app_state_clone = app_state;
+                                            let mut progress_clone = progress;
+                                            let mut selected_tasks_clone = selected_tasks;
+                                            let all_tasks_clone = all_tasks.clone();
+
+                                            spawn(async move {
+                                                let total = selected.len();
+                                                let mut completed = 0;
+                                                let mut successful_tasks = 0;
+                                                let mut failed_tasks = 0;
+                                                let mut total_space_freed: u64 = 0;
+                                                let mut errors = Vec::new();
+
+                                                for task_name in selected {
+                                                    if let Some(task) = all_tasks_clone.iter().find(|t| t.name == task_name) {
+                                                        app_state_clone.set(AppState::Running(format!("正在清理: {}", task.name)));
+
+                                                        let space_before = if let Some(ref path) = task.path_check {
+                                                            get_directory_size(&expand_environment_variables(path))
+                                                        } else {
+                                                            None
+                                                        };
+
+                                                        let result = run_clean_task_impl(task.clone()).await;
+                                                        completed += 1;
+                                                        progress_clone.set(completed as f32 / total as f32);
+
+                                                        match result {
+                                                            Ok(_) => {
+                                                                successful_tasks += 1;
+
+                                                                if let Some(ref path) = task.path_check {
+                                                                    let space_after = get_directory_size(&expand_environment_variables(path));
+                                                                    if let (Some(before), Some(after)) = (space_before, space_after) {
+                                                                        if before > after {
+                                                                            total_space_freed += before - after;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                failed_tasks += 1;
+                                                                errors.push(format!("{}: {}", task.name, e));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                let stats = CleanupStats {
+                                                    total_tasks: total,
+                                                    successful_tasks,
+                                                    failed_tasks,
+                                                    total_space_freed: if total_space_freed > 0 {
+                                                        Some(total_space_freed)
+                                                    } else {
+                                                        None
+                                                    },
+                                                    errors,
+                                                };
+
+                                                if failed_tasks > 0 {
+                                                    app_state_clone.set(AppState::SuccessWithStats(stats));
+                                                } else {
+                                                    app_state_clone.set(AppState::Success);
+                                                }
+                                                selected_tasks_clone.set(HashSet::new());
+                                            });
+                                        }
+                                    },
 
                                     label {
                                 font_size: "14",
@@ -1040,16 +1140,17 @@ fn TaskCard(
 }
 
 async fn run_clean_task_impl(task: CleanTask) -> Result<(), String> {
+    log(&format!("检查任务: {} - 命令: {}", task.name, task.command));
+    
     // 检查路径是否存在（如果有路径检查）
     if let Some(path_check) = &task.path_check {
         let expanded_path = expand_environment_variables(path_check);
         let path = Path::new(&expanded_path);
 
         if !path.exists() {
-            return Err(format!(
-                "清理路径不存在: {}\n无需清理，跳过此任务",
-                expanded_path
-            ));
+            let msg = format!("清理路径不存在: {}\n无需清理，跳过此任务", expanded_path);
+            log(&format!("路径检查失败: {}", msg));
+            return Err(msg);
         }
 
         if path.is_dir() {
@@ -1057,10 +1158,14 @@ async fn run_clean_task_impl(task: CleanTask) -> Result<(), String> {
             if let Ok(entries) = fs::read_dir(path) {
                 let entry_count = entries.count();
                 if entry_count == 0 {
-                    return Err(format!("目录为空: {}\n无需清理，跳过此任务", expanded_path));
+                    let msg = format!("目录为空: {}\n无需清理，跳过此任务", expanded_path);
+                    log(&format!("目录为空: {}", msg));
+                    return Err(msg);
                 }
             }
         }
+        
+        log(&format!("路径检查通过: {}", expanded_path));
     }
 
     // 执行命令
@@ -1077,13 +1182,17 @@ async fn run_clean_task_impl(task: CleanTask) -> Result<(), String> {
 
         for protected in &protected_paths {
             if expanded_command.contains(protected) && !expanded_command.contains("\\Temp\\") {
-                return Err(format!(
+                let msg = format!(
                     "尝试清理系统保护目录: {}\n出于安全考虑，此操作被拒绝",
                     protected
-                ));
+                );
+                log(&format!("安全拦截: {}", msg));
+                return Err(msg);
             }
         }
     }
+    
+    log(&format!("执行命令: {}", expanded_command));
 
     // 使用spawn方式执行命令，避免UI阻塞和命令窗口弹出
     let result = tokio::task::spawn_blocking(move || {
@@ -1136,6 +1245,7 @@ async fn run_clean_task_impl(task: CleanTask) -> Result<(), String> {
                     format!("执行失败: {}", error_msg.trim())
                 };
 
+                log(&format!("命令执行失败: {} - stderr: {} - stdout: {}", detailed_error, error_msg.trim(), stdout_msg.trim()));
                 Err(detailed_error)
             }
         }
@@ -1149,11 +1259,14 @@ async fn run_clean_task_impl(task: CleanTask) -> Result<(), String> {
                 &format!("系统命令执行错误: {}", e)
             };
 
+            log(&format!("命令创建失败: {} - {}", error_detail, e));
             Err(error_detail.to_string())
         }
         Err(e) => {
             // tokio任务执行错误
-            Err(format!("异步执行任务失败: {}", e))
+            let msg = format!("异步执行任务失败: {}", e);
+            log(&format!("tokio任务失败: {}", msg));
+            Err(msg)
         }
     }
 }
@@ -1182,7 +1295,7 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
         String::new()
     };
 
-    let (bg_color, text_color, icon, message, font_weight, icon_bg_color, icon_color, show_stats) =
+    let (bg_color, text_color, icon, message, font_weight, icon_bg_color, icon_color) =
         match &app_state {
             AppState::Idle => (
                 theme.background_tertiary,
@@ -1192,7 +1305,6 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
                 "normal",
                 theme.background_primary,
                 theme.label_secondary,
-                false,
             ),
             AppState::Running(msg) => (
                 theme.accent,
@@ -1202,7 +1314,6 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
                 "medium",
                 "rgb(255, 255, 255)",
                 theme.accent,
-                false,
             ),
             AppState::Success => (
                 "rgb(34, 197, 94)",
@@ -1212,7 +1323,6 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
                 "medium",
                 "rgb(255, 255, 255)",
                 "rgb(34, 197, 94)",
-                false,
             ),
             AppState::SuccessWithStats(_) => (
                 "rgb(34, 197, 94)",
@@ -1222,7 +1332,6 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
                 "medium",
                 "rgb(255, 255, 255)",
                 "rgb(34, 197, 94)",
-                true,
             ),
             AppState::Error(msg) => (
                 "rgb(239, 68, 68)",
@@ -1232,7 +1341,6 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
                 "medium",
                 "rgb(255, 255, 255)",
                 "rgb(239, 68, 68)",
-                false,
             ),
         };
 
@@ -1284,94 +1392,23 @@ fn NotificationBubble(app_state: AppState, theme: &'static AppTheme) -> Element 
                     "⟳"
                 }
             }
-
-            // 显示详细错误信息（如果有）
-            if let AppState::Error(msg) = &app_state {
-                if msg.len() > 50 { // 只显示长错误消息的简要信息
-                    rect {
-                        width: "100%",
-                        margin: "8 0 0 0",
-                        padding: "8 12",
-                        background: "rgba(255, 255, 255, 0.1)",
-                        corner_radius: "6",
-
-                        label {
-                            font_size: "12",
-                            color: text_color,
-                            "点击查看详细错误信息"
-                        }
-                    }
-                }
-            }
-
-            // 显示统计详情（批量模式）
-            if show_stats {
-                if let AppState::SuccessWithStats(stats) = &app_state {
-                    rect {
-                        width: "100%",
-                        margin: "8 0 0 0",
-                        padding: "8 12",
-                        background: "rgba(255, 255, 255, 0.1)",
-                        corner_radius: "6",
-                        direction: "vertical",
-
-                        rect {
-                            direction: "horizontal",
-                            main_align: "space_between",
-
-                            label {
-                                font_size: "12",
-                                color: text_color,
-                                "成功率: {((stats.successful_tasks as f32 / stats.total_tasks as f32) * 100.0) as u32}%"
-                            }
-
-                            if stats.failed_tasks > 0 {
-                                label {
-                                    font_size: "12",
-                                    color: text_color,
-                                    "失败: {stats.failed_tasks}"
-                                }
-                            }
-                        }
-
-                        if !stats.errors.is_empty() && stats.errors.len() <= 3 {
-                            for error in &stats.errors {
-                                label {
-                                    font_size: "11",
-                                    color: text_color,
-                                    margin: "2 0 0 0",
-                                    "• {error}"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            
         }
     )
 }
 
 async fn run_clean_task(task: CleanTask, mut app_state: Signal<AppState>) {
+    log(&format!("开始执行任务: {}", task.name));
     app_state.set(AppState::Running(format!("正在执行: {}", task.name)));
 
     match run_clean_task_impl(task.clone()).await {
         Ok(_) => {
+            log(&format!("任务成功: {}", task.name));
             app_state.set(AppState::Success);
         }
         Err(e) => {
+            log(&format!("任务失败: {} - {}", task.name, e));
             app_state.set(AppState::Error(e));
         }
     }
-}
-
-fn expand_env_vars(path: &str) -> String {
-    let expanded = path.replace(
-        "%USERPROFILE%",
-        &std::env::var("USERPROFILE").unwrap_or_default(),
-    );
-    let expanded = expanded.replace(
-        "%LocalAppData%",
-        &std::env::var("LOCALAPPDATA").unwrap_or_default(),
-    );
-    expanded
 }
